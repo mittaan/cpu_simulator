@@ -19,6 +19,30 @@ class Flags:
         return ps
 
 class CPU:
+
+    Syscall = 0x80
+    IntLoc  = 0xF0000
+    COM0    = 0xF0001
+
+    reserved            = 0x00
+    SingleStepInterrupt = 0x01
+    Breakpoint          = 0x03
+    InvalidOpcode       = 0x06
+    DoubleFault         = 0x08
+    OutOfMemory         = 0x16
+
+    Sys_RestartSyscall = 0x00
+
+    Sys_Exit = 0x01
+    Sys_Fork = 0x02
+    Sys_Read = 0x03
+    Sys_Write = 0x04
+    Sys_Open = 0x05
+    Sys_Close = 0x06
+    Sys_Create = 0x08
+    Sys_Time = 0x0D
+    Sys_fTime = 0x23
+
     def __init__(self):
         self.PC = 0 # Program Counter Register
         self.PS = Flags()
@@ -77,15 +101,81 @@ class CPU:
     
     def __FetchWord(self) -> int:
          return self.__FetchByte() << 8 | self.__FetchByte()
+
+    def __RaiseInterrupt(self, code: int, **kwargs) -> None:
+        try:
+            string = "CPU: Interrupt: "
+
+            if code == self.InvalidOpcode:
+                if 'opcode' in kwargs:
+                    string += f"InvalidOpcode: {hex(kwargs['opcode'])} at address {hex(self.PC)}"
+
+                else:
+                    string += f"InvalidOpcode: Unknown address at {hex(self.PC)}"
+
+            elif code == self.OutOfMemory:
+                string += f"OutOfMemory: {hex(self.PC)}"
+            
+            elif code == self.SingleStepInterrupt:
+                string += f"SingleStepInterrupt: {hex(self.PC)}"
+                input(string)
+                return
+            
+            elif code == self.Breakpoint:
+                string += f"Breakpoint: {hex(self.PC-1)}"
+                input(string)
+                return
+
+        except Exception as e:
+            if self.Debug:
+                print(f"CPU: Interrupt: DoubleFault: Origin: {e}")
+
+            raise Exception(string + f"DoubleFault: {hex(self.PC)}")
+
+        raise Exception(string)
+    
+    def __HandleSyscall(self) -> None:
+        if self.EAX == self.Sys_Write:
+            if self.EBX == 1:
+                string = ''
+                counter = 0
+
+                while counter < self.EDX:
+                    char = self.Memory[self.ECX + counter]
+                    self.Cycles -= 1
+                    string += chr(char)
+                    counter += 1
+
+                if self.Debug:
+                    print(f"CPU: Interrupt: Syscall: Write: Stdout: {string}")
+
+                else:
+                    print(string, end='')
+
+    def __HandleInterrupt(self) -> None:
+        if self.Memory[self.IntLoc] == self.Syscall:
+            self.__HandleSyscall()
+
+        else:
+            self.__RaiseInterrupt(self.Memory[self.IntLoc])
+
+        self.InInterrupt = True
+        self.PS.E = 0
     
     def Execute(self, cycles: int) -> Any:
         self.Cycles = cycles
         
         while (self.Cycles > 0):
+            if self.PS.T:
+                self.__RaiseInterrupt(self.SingleStepInterrupt)
+
             ins = self.__FetchByte()
             
             if ins == NOP:
                 pass
+
+            elif ins == 0xCC:
+                self.__RaiseInterrupt(self.Breakpoint)
 
             elif ins == HLT:
                 return
@@ -102,6 +192,11 @@ class CPU:
                     reg = self.__FetchByte()
                     value = self.__FetchWord()
                     self.__WriteReg(reg, value)
+
+            elif ins == INT:
+                intCode = self.__FetchByte()
+                self.Memory[self.IntLoc] = intCode
+                self.__HandleInterrupt()
 
             else:
                 print(f"InvalidOpcode: {hex(ins)} at address {hex(self.PC-1)}")
